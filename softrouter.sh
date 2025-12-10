@@ -1,20 +1,26 @@
 #!/bin/sh
-# ech-wk OpenWrt helper by ChatGPT
-# 使用前先: chmod +x /root/ech-wk.sh  然后: /root/ech-wk.sh
+# ech-wk OpenWrt 自动安装脚本，支持自动获取最新版本
 
 REPO_OWNER="byJoey"
 REPO_NAME="ech-wk"
 BIN_PATH="/usr/bin/ech-workers"
 TMP_DIR="/tmp/ech-workers"
 
-# 默认值（第一次生成配置用，可以之后在菜单里改）
+# 默认配置
 DEFAULT_BEST_IP="joeyblog.net"
 DEFAULT_SERVER_ADDR="echo.example.com:443"
 DEFAULT_LISTEN_ADDR="0.0.0.0:30001"
 DEFAULT_TOKEN=""
 DEFAULT_DNS="https://dns.alidns.com/dns-query"
 DEFAULT_ECH_DOMAIN="cloudflare-ech.com"
-DEFAULT_ROUTING="global" # 分流模式 默认值是 global，bypass_cn 表示绕过中国地区
+DEFAULT_ROUTING="global" # 默认分流模式 global
+
+# 更新包列表
+update_package_list() {
+    echo "更新 opkg 包列表..."
+    opkg update || { echo "更新失败"; exit 1; }
+    echo "包列表更新完成"
+}
 
 # 检查并安装缺失的依赖
 install_dependencies() {
@@ -24,25 +30,25 @@ install_dependencies() {
     # 检查 curl
     if ! command -v curl >/dev/null 2>&1; then
         echo "缺少 curl，正在安装..."
-        opkg update && opkg install curl || { echo "安装 curl 失败"; MISSING=1; }
+        opkg install curl || { echo "安装 curl 失败"; MISSING=1; }
     fi
 
     # 检查 tar
     if ! command -v tar >/dev/null 2>&1; then
         echo "缺少 tar，正在安装..."
-        opkg update && opkg install tar || { echo "安装 tar 失败"; MISSING=1; }
+        opkg install tar || { echo "安装 tar 失败"; MISSING=1; }
     fi
 
     # 检查 jq
     if ! command -v jq >/dev/null 2>&1; then
         echo "缺少 jq，正在安装..."
-        opkg update && opkg install jq || { echo "安装 jq 失败"; MISSING=1; }
+        opkg install jq || { echo "安装 jq 失败"; MISSING=1; }
     fi
 
     # 检查 procd
     if ! command -v procd >/dev/null 2>&1; then
         echo "缺少 procd，正在安装..."
-        opkg update && opkg install procd || { echo "安装 procd 失败"; MISSING=1; }
+        opkg install procd || { echo "安装 procd 失败"; MISSING=1; }
     fi
 
     if [ $MISSING -eq 1 ]; then
@@ -57,14 +63,17 @@ install_dependencies() {
 get_latest_release_url() {
     echo "正在获取 GitHub 最新发布版本..."
 
-    # 检查架构
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "x86_64" ]; then
-        DOWNLOAD_URL="https://github.com/byJoey/ech-wk/releases/download/latest/ECHWorkers-linux-amd64-softrouter.tar.gz"
-    elif [ "$ARCH" = "aarch64" ]; then
-        DOWNLOAD_URL="https://github.com/byJoey/ech-wk/releases/download/latest/ECHWorkers-linux-arm64-softrouter.tar.gz"
-    else
-        echo "不支持此架构：$ARCH"
+    # 获取最新 release 的信息
+    RELEASE_INFO=$(curl -s "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest")
+    if [ $? -ne 0 ]; then
+        echo "获取 release 信息失败"
+        return 1
+    fi
+
+    # 获取下载链接
+    DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | test("linux-amd64")) | .browser_download_url')
+    if [ -z "$DOWNLOAD_URL" ]; then
+        echo "未找到合适的下载链接"
         return 1
     fi
 
@@ -72,41 +81,39 @@ get_latest_release_url() {
     echo $DOWNLOAD_URL
 }
 
+# 安装二进制文件
 ensure_binary() {
-  if [ -x "$BIN_PATH" ]; then
-    return 0
-  fi
+    if [ -x "$BIN_PATH" ]; then
+        return 0
+    fi
 
-  echo "找不到二进制: $BIN_PATH"
-  echo "自动下载最新版本..."
+    echo "找不到二进制: $BIN_PATH"
+    echo "自动下载最新版本..."
 
-  DOWNLOAD_URL=$(get_latest_release_url)
-  if [ $? -ne 0 ]; then
-    echo "下载失败！"
-    return 1
-  fi
+    DOWNLOAD_URL=$(get_latest_release_url)
+    if [ $? -ne 0 ]; then
+        echo "下载失败！"
+        return 1
+    fi
 
-  echo "开始下载..."
-  mkdir -p "$(dirname "$BIN_PATH")"
-  mkdir -p "$TMP_DIR"
+    echo "开始下载..."
+    mkdir -p "$(dirname "$BIN_PATH")"
+    mkdir -p "$TMP_DIR"
 
-  # 使用 curl 下载压缩包
-  curl -L -o "$TMP_DIR/ech-workers.tar.gz" "$DOWNLOAD_URL" || {
-    echo "下载失败"; return 1; }
+    # 使用 curl 下载压缩包
+    curl -L -o "$TMP_DIR/ech-workers.tar.gz" "$DOWNLOAD_URL" || { echo "下载失败"; return 1; }
 
-  echo "下载完成，开始解压..."
-  # 解压下载的文件
-  tar -zxvf "$TMP_DIR/ech-workers.tar.gz" -C "$TMP_DIR" || {
-    echo "解压失败"; return 1; }
+    echo "下载完成，开始解压..."
+    tar -zxvf "$TMP_DIR/ech-workers.tar.gz" -C "$TMP_DIR" || { echo "解压失败"; return 1; }
 
-  # 假设解压后文件名是 ech-workers，请根据实际情况调整
-  mv "$TMP_DIR/ech-workers" "$BIN_PATH" || {
-    echo "移动失败"; return 1; }
+    # 假设解压后文件名是 ech-workers，请根据实际情况调整
+    mv "$TMP_DIR/ech-workers" "$BIN_PATH" || { echo "安装失败"; return 1; }
 
-  chmod +x "$BIN_PATH"
-  echo "安装完成: $BIN_PATH"
+    chmod +x "$BIN_PATH"
+    echo "安装完成: $BIN_PATH"
 }
 
+# 确保配置文件存在
 ensure_conf() {
     if [ -f "$CONF_FILE" ]; then
         return 0
@@ -125,6 +132,7 @@ EOF
     echo "已生成默认配置: $CONF_FILE"
 }
 
+# 启动服务
 ensure_init() {
     if [ -f "$INIT_FILE" ]; then
         return 0
@@ -168,10 +176,12 @@ EOF
     echo "已创建启动脚本: $INIT_FILE 并设置开机自启"
 }
 
+# 加载配置
 load_conf() {
     [ -f "$CONF_FILE" ] && . "$CONF_FILE"
 }
 
+# 保存配置
 save_conf() {
     mkdir -p "$(dirname "$CONF_FILE")"
     cat >"$CONF_FILE" <<EOF
@@ -185,6 +195,7 @@ ROUTING="${ROUTING}"
 EOF
 }
 
+# 菜单界面
 show_menu() {
     while true; do
         clear
@@ -291,6 +302,7 @@ show_menu() {
 }
 
 # 入口
+update_package_list   # 更新包列表
 install_dependencies  # 自动安装依赖
 ensure_conf
 show_menu
